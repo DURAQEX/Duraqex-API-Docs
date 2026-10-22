@@ -1,0 +1,1639 @@
+# Duraqex Platform API Integration Guide (Version v2.1)
+
+**Document version:** v2.1  
+**Market data model:** Spot trading pairs  
+**Example trading pairs:** `BTC-USDT`, `ETH-USDT`  
+**Time reference:** UTC; Unix timestamps in milliseconds  
+**Access requirements:** All market data endpoints in this guide are public and read-only. No API key or signature is required.
+
+---
+
+## 1. HTTP Market Data Endpoints
+
+### 1.1 Base URL and Endpoint List
+
+HTTP base URL:
+
+```text
+https://api.duraqex.com/v2.1
+```
+
+| Purpose | Method | Path | Data scope |
+|---|---|---|---|
+| Latest price | GET | `/market/ticker` | Last executed trade price for a single trading pair |
+| Order book depth | GET | `/market/depth` | Current bid and ask snapshot for a single trading pair |
+| Recent individual trades | GET | `/market/trades` | Most recent executions for a single trading pair |
+| Historical and current candlesticks | GET | `/market/klines` | Candlesticks for a specified interval and time range |
+
+All parameters are passed in the URL query string. GET requests do not have a request body. Each request accepts exactly one trading pair; comma-separated lists of trading pairs are not supported.
+
+Example request:
+
+```http
+GET /v2.1/market/ticker?symbol=BTC-USDT HTTP/1.1
+Host: api.duraqex.com
+Accept: application/json
+X-Request-ID: java-ticker-0001
+```
+
+`X-Request-ID` is optional and correlates application logs with server requests. It accepts only English letters, digits, underscores, and hyphens, with a length of 1–64 characters. When valid, the server echoes it unchanged in the response body and the response header of the same name. If omitted, the server generates an ID. If the header is invalid, the server generates a new request ID and returns a parameter error.
+
+### 1.2 Common Fields and Data Types
+
+| Category | Protocol convention | Java representation |
+|---|---|---|
+| Trading pair | Uppercase base and quote asset symbols separated by `-`, such as `BTC-USDT` | `String` |
+| Timestamp | JSON integer; Unix timestamp in milliseconds | `long`, `Instant` |
+| Price | JSON string, such as `"68250.10"` | `BigDecimal` |
+| Base asset quantity | JSON string, such as `"0.01500000"` | `BigDecimal` |
+| Quote asset amount | JSON string, such as `"1023.75150000"` | `BigDecimal` |
+| Trade ID and order book sequence number | JSON string containing a decimal integer | Store as `String`; compare numerically as integers when ordering is needed |
+| Candlestick revision | Positive JSON integer | `long` |
+| Boolean | JSON `true` or `false` | `boolean` |
+| Absent cursor or unavailable field value | JSON `null` | Use a nullable type; do not convert to the string `"null"` |
+
+Additional conventions:
+
+1. Request parameters are case-sensitive. `btc-usdt`, `BTCUSDT`, and `BTC-USDT` are not equivalent; only the last format is accepted.
+2. Leading and trailing whitespace is not trimmed automatically. Duplicate parameter names, unknown query parameters, and values that cannot be parsed return `INVALID_ARGUMENT`.
+3. Timestamps must be nonnegative decimal integers. Second-based timestamps are not converted automatically, and date strings are not accepted.
+4. Amounts and quantities do not use scientific notation. Decimal places may vary by trading pair or field; do not infer a fixed scale from the examples.
+5. IDs and sequence numbers represented as numeric strings range from `1` to `9223372036854775807`, without leading zeros. The order book `bookId` is not a numeric string.
+6. Market data responses do not prescribe a fixed decimal truncation rule. Java clients should retain the original precision and apply formatting rules only for display.
+7. Additional response fields are compatible changes and should be ignored by clients. Missing required fields, incorrect types, and unknown message types must be logged and handled according to the recovery rules for the affected stream, rather than silently treated as valid data.
+
+### 1.3 Common Response Envelope
+
+Successful response:
+
+```json
+{
+  "code": "0",
+  "message": "OK",
+  "requestId": "java-ticker-0001",
+  "serverTime": 1792656072000,
+  "data": {
+    "symbol": "BTC-USDT"
+  }
+}
+```
+
+This example illustrates the response envelope only. Complete payload fields are documented under each endpoint.
+
+| Field | Type | Description |
+|---|---|---|
+| `code` | string | Always `"0"` on success; an error code string on failure |
+| `message` | string | Human-readable description; do not use it for programmatic branching |
+| `requestId` | string | Correlation ID for this request |
+| `serverTime` | integer | Server time when the response was generated, in milliseconds |
+| `data` | object / null | Business payload on success; `null` on failure |
+| `error` | object | Present only on failure; contains structured error details |
+
+Check both the HTTP status and the application `code`. HTTP `200` corresponds to `code="0"`; application errors use the appropriate non-2xx status. Errors generated by a proxy or gateway may not use this JSON envelope, so clients must also handle non-JSON error bodies.
+
+Example error response with HTTP status `400`:
+
+```json
+{
+  "code": "INVALID_ARGUMENT",
+  "message": "limit must be between 1 and 1000",
+  "requestId": "java-kline-0002",
+  "serverTime": 1792656072000,
+  "data": null,
+  "error": {
+    "details": [
+      {
+        "field": "limit",
+        "reason": "OUT_OF_RANGE"
+      }
+    ]
+  }
+}
+```
+
+### 1.4 Latest Price
+
+#### 1.4.1 Endpoint Definition
+
+```http
+GET /v2.1/market/ticker
+```
+
+Returns the price of the last executed trade for the specified trading pair. This is not the order book midpoint and does not guarantee that a trade can currently execute at that price.
+
+#### 1.4.2 Request Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `symbol` | string | Yes | None | Trading pair, such as `BTC-USDT` |
+
+```text
+https://api.duraqex.com/v2.1/market/ticker?symbol=BTC-USDT
+```
+
+#### 1.4.3 Example Response
+
+```json
+{
+  "code": "0",
+  "message": "OK",
+  "requestId": "java-ticker-0001",
+  "serverTime": 1792656072000,
+  "data": {
+    "symbol": "BTC-USDT",
+    "hasTrade": true,
+    "lastPrice": "68250.10",
+    "lastQty": "0.01500000",
+    "lastTradeId": "90010002",
+    "lastTradeTime": 1792656071950
+  }
+}
+```
+
+#### 1.4.4 Field Definitions
+
+| Field | Type | Nullable | Description |
+|---|---|---|---|
+| `symbol` | string | No | Trading pair |
+| `hasTrade` | boolean | No | Whether the trading pair has had any executions |
+| `lastPrice` | string | Yes | Last executed price, in USDT per BTC in this example |
+| `lastQty` | string | Yes | Base asset quantity of the last trade, in BTC in this example |
+| `lastTradeId` | string | Yes | ID of the last trade |
+| `lastTradeTime` | integer | Time of the last trade |
+
+For a trading pair that exists but has never traded, the endpoint still succeeds: `hasTrade=false`, and all four trade-related fields are `null`. Without a new trade, these fields remain unchanged. Do not substitute HTTP `serverTime` for the trade time when determining data freshness.
+
+The latest price response does not include 24-hour price changes, 24-hour volume, or similar statistics. Do not interpret the single-trade quantity `lastQty` as cumulative volume.
+
+### 1.5 Order Book Depth
+
+#### 1.5.1 Endpoint Definition
+
+```http
+GET /v2.1/market/depth
+```
+
+Returns bid and ask snapshots generated from the same order book state. HTTP snapshots can be used for a one-time display, a fresh query, or verification. For a live order book, initialize from the snapshot sent after a WebSocket subscription; see Section 2.6.
+
+#### 1.5.2 Request Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `symbol` | string | Yes | None | Trading pair |
+| `limit` | integer | No | `20` | Maximum price levels per side; allowed values: `5`, `10`, `20`, `50`, `100`, `500` |
+
+`limit=5` returns up to five bid levels and five ask levels, rather than five levels across both sides combined.
+
+```text
+https://api.duraqex.com/v2.1/market/depth?symbol=BTC-USDT&limit=5
+```
+
+#### 1.5.3 Example Response
+
+```json
+{
+  "code": "0",
+  "message": "OK",
+  "requestId": "java-depth-0001",
+  "serverTime": 1792656072000,
+  "data": {
+    "symbol": "BTC-USDT",
+    "limit": 5,
+    "bookId": "dep-btc-usdt-0007",
+    "sequence": "8000100",
+    "eventTime": 1792656071980,
+    "bids": [
+      ["68250.00", "1.20000000"],
+      ["68249.90", "0.80000000"],
+      ["68249.80", "2.50000000"],
+      ["68249.70", "1.10000000"],
+      ["68249.60", "0.60000000"]
+    ],
+    "asks": [
+      ["68250.20", "0.90000000"],
+      ["68250.30", "1.40000000"],
+      ["68250.40", "2.10000000"],
+      ["68250.50", "0.70000000"],
+      ["68250.60", "1.80000000"]
+    ]
+  }
+}
+```
+
+#### 1.5.4 Fields and Sorting Rules
+
+| Field | Type | Description |
+|---|---|---|
+| `symbol` | string | Trading pair |
+| `limit` | integer | Requested maximum levels per side |
+| `bookId` | string | Identifier of the order book lifecycle to which the sequence belongs; changes when the book is rebuilt |
+| `sequence` | string | Sequence number of this snapshot's book state; increases within the same `bookId` |
+| `eventTime` | integer | Time when this book state was formed |
+| `bids` | array | Bid levels, sorted by descending price |
+| `asks` | array | Ask levels, sorted by ascending price |
+
+Each price level is exactly a two-element array, `[price, quantity]`:
+
+- `price`: Price, in USDT per BTC in this example.
+- `quantity`: Aggregated remaining base asset quantity at that price level, in BTC in this example.
+- Each price appears only once on a given side. Snapshots do not contain zero-quantity levels.
+- Prices and quantities are positive. A side without resting orders is returned as an empty array, `[]`.
+- If fewer than `limit` levels exist, only the existing levels are returned. No zero padding is added, and the two sides need not have the same number of levels.
+- HTTP and WebSocket `sequence` values for the same `bookId` share the same source sequence. Sequence numbers from different `bookId` values cannot be compared.
+
+The best bid is the first entry of a nonempty `bids` array; the best ask is the first entry of a nonempty `asks` array. The spread is the best ask minus the best bid, but it cannot be used to infer the last executed price.
+
+### 1.6 Recent Individual Trades
+
+#### 1.6.1 Endpoint Definition
+
+```http
+GET /v2.1/market/trades
+```
+
+Returns the most recent individual executions. Each entry represents one matched trade, not an order or a price-aggregated statistic.
+
+#### 1.6.2 Request Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `symbol` | string | Yes | None | Trading pair |
+| `limit` | integer | No | `100` | Maximum number of trades to return; range: `1`–`1000` |
+
+```text
+https://api.duraqex.com/v2.1/market/trades?symbol=BTC-USDT&limit=2
+```
+
+This endpoint does not support queries by time range, trade ID, or cursor. It provides at most the latest 1000 trades and cannot be used to download arbitrary historical executions.
+
+#### 1.6.3 Example Response
+
+```json
+{
+  "code": "0",
+  "message": "OK",
+  "requestId": "java-trades-0001",
+  "serverTime": 1792656072000,
+  "data": {
+    "symbol": "BTC-USDT",
+    "limit": 2,
+    "count": 2,
+    "items": [
+      {
+        "tradeId": "90010001",
+        "price": "68249.90",
+        "quantity": "0.02000000",
+        "quoteQuantity": "1364.99800000",
+        "takerSide": "SELL",
+        "tradeTime": 1792656071870
+      },
+      {
+        "tradeId": "90010002",
+        "price": "68250.10",
+        "quantity": "0.01500000",
+        "quoteQuantity": "1023.75150000",
+        "takerSide": "BUY",
+        "tradeTime": 1792656071950
+      }
+    ]
+  }
+}
+```
+
+#### 1.6.4 Field Definitions
+
+| Field | Type | Description |
+|---|---|---|
+| `data.symbol` | string | Trading pair |
+| `data.limit` | integer | Requested maximum trade count |
+| `data.count` | integer | Actual number of trades returned; equals `items.length` |
+| `tradeId` | string | Trade ID, unique within the trading pair and increasing in execution order |
+| `price` | string | Execution price |
+| `quantity` | string | Executed base asset quantity |
+| `quoteQuantity` | string | Executed quote asset amount; under this protocol, the exact decimal result of `price × quantity`, excluding fees |
+| `takerSide` | string | Aggressor side: `BUY` or `SELL` |
+| `tradeTime` | integer | Execution time |
+
+Side definitions:
+
+- `BUY`: An aggressive buyer executed against a resting sell order.
+- `SELL`: An aggressive seller executed against a resting buy order.
+- This field does not identify the integrating application's own trading side, nor imply that only a buyer or only a seller participated.
+
+Ordering and deduplication rules:
+
+1. The server first selects the latest `limit` trades, then returns them in ascending numeric `tradeId` order for sequential processing.
+2. Multiple executions may occur within the same millisecond. Do not deduplicate using `tradeTime` alone.
+3. The deduplication key is `(symbol, tradeId)`.
+4. Trade IDs increase monotonically but need not be consecutive. An ID gap alone does not prove that a trade was missed.
+5. If no trades exist, `count=0` and `items=[]`, with HTTP status `200`.
+
+### 1.7 Historical and Current Candlesticks
+
+#### 1.7.1 Endpoint Definition
+
+```http
+GET /v2.1/market/klines
+```
+
+Returns candlesticks, also called klines, aggregated over the specified interval. A response may include both closed candles and the current open candle. Read `isClosed` to determine whether each candle has closed.
+
+#### 1.7.2 Request Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `symbol` | string | Yes | None | Trading pair |
+| `interval` | string | Yes | None | One of `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d` |
+| `startTime` | integer | No | See pagination rules | Inclusive lower bound on candle open time |
+| `endTime` | integer | No | See pagination rules | Exclusive upper bound on candle open time |
+| `limit` | integer | No | `500` | Maximum number of candles returned; range: `1`–`1000` |
+
+Example request:
+
+```text
+https://api.duraqex.com/v2.1/market/klines?symbol=BTC-USDT&interval=1m&startTime=1792656000000&endTime=1792656120000&limit=2
+```
+
+This request selects 1-minute candles opening between UTC `2026-10-22 08:00:00` and `08:02:00`. It includes `08:00:00` and `08:01:00`, but excludes `08:02:00`.
+
+#### 1.7.3 Example Response
+
+```json
+{
+  "code": "0",
+  "message": "OK",
+  "requestId": "java-kline-0001",
+  "serverTime": 1792656072000,
+  "data": {
+    "symbol": "BTC-USDT",
+    "interval": "1m",
+    "intervalMs": 60000,
+    "asOf": 1792656072000,
+    "availableFrom": 1704067200000,
+    "pageDirection": "forward",
+    "limit": 2,
+    "count": 2,
+    "hasMore": false,
+    "nextStartTime": null,
+    "nextEndTime": null,
+    "items": [
+      {
+        "openTime": 1792656000000,
+        "closeTime": 1792656060000,
+        "open": "68200.00",
+        "high": "68300.00",
+        "low": "68180.00",
+        "close": "68240.00",
+        "volume": "12.00000000",
+        "quoteVolume": "818760.00000000",
+        "tradeCount": 128,
+        "isClosed": true,
+        "revision": 129,
+        "eventTime": 1792656060000
+      },
+      {
+        "openTime": 1792656060000,
+        "closeTime": 1792656120000,
+        "open": "68240.00",
+        "high": "68260.00",
+        "low": "68230.00",
+        "close": "68250.10",
+        "volume": "2.50000000",
+        "quoteVolume": "170610.12500000",
+        "tradeCount": 31,
+        "isClosed": false,
+        "revision": 31,
+        "eventTime": 1792656071950
+      }
+    ]
+  }
+}
+```
+
+In this example, `availableFrom=1704067200000` is the earliest queryable candle open time for this trading pair and interval in the example service: UTC `2024-01-01 00:00:00`. Do not hard-code this example value in an actual integration.
+
+#### 1.7.4 Pagination Metadata
+
+| Field | Type | Description |
+|---|---|---|
+| `symbol` | string | Trading pair |
+| `interval` | string | Interval identifier |
+| `intervalMs` | integer | Duration of the interval in milliseconds |
+| `asOf` | integer | Time of the data snapshot read for this query; no later than the outer `serverTime` |
+| `availableFrom` | integer / null | Earliest queryable candle open time; `null` if no candles exist yet |
+| `pageDirection` | string | `forward` or `backward`; determines the next-page cursor |
+| `limit` | integer | Requested maximum number of candles |
+| `count` | integer | Number of returned candles; equals `items.length` |
+| `hasMore` | boolean | Whether more records remain in the selected direction among data that existed at this query's `asOf` and matches the original filters |
+| `nextStartTime` | integer / null | Lower bound for the next forward page; non-null only when direction is `forward` and `hasMore=true` |
+| `nextEndTime` | integer / null | Upper bound for the next backward page; non-null only when direction is `backward` and `hasMore=true` |
+| `items` | array | Candles sorted by ascending `openTime` in every pagination mode |
+
+#### 1.7.5 Individual Candlestick Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `openTime` | integer | Inclusive start of the interval |
+| `closeTime` | integer | Exclusive end boundary of the interval; not the final millisecond |
+| `open` | string | First execution price in the interval; see Section 3.4 for intervals without trades |
+| `high` | string | Highest execution price in the interval |
+| `low` | string | Lowest execution price in the interval |
+| `close` | string | Last execution price in the interval; for an open candle, the latest price so far |
+| `volume` | string | Cumulative base asset volume for the interval |
+| `quoteVolume` | string | Cumulative quote asset amount for the interval: the sum of each trade's `price × quantity` |
+| `tradeCount` | integer | Number of executions in the interval; nonnegative; use Java `long` |
+| `isClosed` | boolean | Whether the server has finalized this interval |
+| `revision` | integer | Revision of this candle; starts at `1` and increases as business fields change; delivered revisions need not be consecutive |
+| `eventTime` | integer | Time when this revision was formed |
+
+A candle is uniquely identified by `(symbol, interval, openTime)`. HTTP and WebSocket share this key and the same `revision` values for initialization and live-data merging.
+
+### 1.8 HTTP Rate Limits, Timeouts, and Errors
+
+This design applies a shared quota to all four HTTP market data endpoints per source IP. The limit is **600 weight units per fixed UTC calendar-minute window**.
+
+| Endpoint | Weight per request |
+|---|---:|
+| `/market/ticker` | 1 |
+| `/market/depth`, `limit≤100` | 2 |
+| `/market/depth`, `limit=500` | 5 |
+| `/market/trades` | 2 |
+| `/market/klines` | 5 |
+
+Query requests that pass basic routing and parameter validation consume weight, including successful requests with no matching data and service errors that occur after query execution starts. Parameter validation failures do not consume this market data quota. Requests rejected by the rate limiter do not consume additional weight.
+
+Server application responses include:
+
+| Header | Description |
+|---|---|
+| `X-RateLimit-Limit` | Total quota for the current window, such as `600` |
+| `X-RateLimit-Remaining` | Quota remaining after charging the request associated with this response |
+| `X-RateLimit-Reset` | End of the current window, as a Unix timestamp in milliseconds |
+| `Retry-After` | Required for HTTP `429`; an integer number of seconds specifying the minimum wait |
+
+Rate limit windows use server time. Concurrent responses may arrive in a different order from quota accounting, so the remaining quota in one response must not be treated as a global synchronization lock.
+
+| HTTP status | `code` | Meaning | Java client action |
+|---:|---|---|---|
+| 400 | `INVALID_ARGUMENT` | Invalid parameter type, range, format, or duplicate parameter | Correct the parameters; do not automatically retry unchanged |
+| 400 | `INVALID_INTERVAL` | Unsupported candlestick interval | Use a supported interval |
+| 400 | `INVALID_TIME_RANGE` | Both bounds were supplied with `startTime≥endTime` | Correct the range |
+| 404 | `SYMBOL_NOT_FOUND` | Trading pair does not exist | Check the trading pair |
+| 404 | `NOT_FOUND` | Path does not exist | Check the version and path |
+| 405 | `METHOD_NOT_ALLOWED` | A method other than GET was used | Use GET; the response includes `Allow: GET` |
+| 429 | `RATE_LIMITED` | Insufficient market data weight quota | Wait at least as long as specified by `Retry-After` |
+| 500 | `INTERNAL_ERROR` | Internal service error | Retry with backoff and a maximum attempt count |
+| 503 | `SERVICE_UNAVAILABLE` | Market data service is unavailable | Retry with bounded backoff and mark data as stale |
+
+An empty array, no trade history, or an empty side of the book is a valid business state. These conditions do not use `404` or `204`.
+
+Java clients can start with a 5-second connection timeout and a 10-second per-request timeout, then adjust for their deployment. These are suggested client settings, not server latency guarantees. GET requests may be retried after transient network failures or `5xx` responses, subject to a maximum attempt count. For `429`, always honor `Retry-After` first.
+
+---
+
+## 2. WebSocket Market Data Integration
+
+### 2.1 Connection URL and Message Conventions
+
+```text
+wss://stream.duraqex.com/v2.1/market
+```
+
+This URL serves all four channels: latest price, order book depth, individual trades, and live candlesticks. Connecting does not automatically subscribe to market data. After connecting, send a subscription request and wait for its acknowledgment.
+
+| Item | Convention |
+|---|---|
+| Transport | WebSocket over TLS, using `wss` |
+| Application messages | UTF-8 text; each complete WebSocket message contains one JSON object |
+| Binary messages | Not used in this version |
+| Application-level compression | Business payloads do not require the client to perform gzip decompression |
+| Subprotocol | No `Sec-WebSocket-Protocol` setting is required |
+| Maximum application message size | 1 MiB of decoded UTF-8 text in either direction |
+| Public access | No API key, signature, or login message is required |
+| Subscriptions per connection | At most 50 normalized subscriptions |
+| Concurrent connections per IP | At most 10; excess connections receive HTTP `429` during the handshake |
+| Client control message rate | At most 10 messages per connection in any rolling 1-second period, including subscribe, unsubscribe, and application-level ping |
+| Items per subscription request | At most 20 subscription items |
+| Server-side historical replay | No automatic replay of messages missed during disconnection and no resume-from-checkpoint connection support |
+
+WebSocket messages may be fragmented. A text fragment received by a Java callback is not necessarily a complete JSON message. Accumulate fragments until the full message is available before parsing.
+
+Within a connection, the server delivers messages in send order. There is no atomic consistency guarantee across channels. For example, a ticker update may arrive before the book update caused by the same trade. Do not infer matching-engine behavior from cross-channel arrival order.
+
+### 2.2 Subscription Identity
+
+| Channel | `channel` | Required subscription fields | Optional fields | Normalized unique key |
+|---|---|---|---|---|
+| Latest price | `ticker` | `symbol` | None | `(ticker, symbol)` |
+| Order book depth | `depth` | `symbol` | `limit`, default `20` | `(depth, symbol, limit)` |
+| Individual trades | `trades` | `symbol` | None | `(trades, symbol)` |
+| Live candlesticks | `kline` | `symbol, interval` | None | `(kline, symbol, interval)` |
+
+WebSocket depth `limit` supports only `5`, `10`, `20`, `50`, and `100`; the HTTP-only depth of `500` is not supported. A connection may maintain only one depth setting per trading pair. To switch from 20 to 100 levels, unsubscribe from 20 levels, wait for acknowledgment, then subscribe to 100 levels.
+
+Multiple candlestick intervals for the same trading pair may be subscribed simultaneously. Each interval counts as a separate subscription. Subscribing once to each of the four channel types uses four subscription slots.
+
+Every client control message requires a `requestId` with the same format as the HTTP request ID. It correlates control requests and responses only; it is not a market data deduplication key. Generate a new ID for each control operation. This protocol does not provide a control request ID replay cache.
+
+### 2.3 Subscribing and Unsubscribing
+
+#### 2.3.1 Subscribing to All Four Data Types
+
+Client request:
+
+```json
+{
+  "op": "subscribe",
+  "requestId": "sub-0001",
+  "args": [
+    {
+      "channel": "ticker",
+      "symbol": "BTC-USDT"
+    },
+    {
+      "channel": "depth",
+      "symbol": "BTC-USDT",
+      "limit": 5
+    },
+    {
+      "channel": "trades",
+      "symbol": "BTC-USDT"
+    },
+    {
+      "channel": "kline",
+      "symbol": "BTC-USDT",
+      "interval": "1m"
+    }
+  ]
+}
+```
+
+Server acknowledgment:
+
+```json
+{
+  "op": "subscribe",
+  "requestId": "sub-0001",
+  "success": true,
+  "ts": 1792656072000,
+  "data": {
+    "subscriptions": [
+      {
+        "channel": "ticker",
+        "symbol": "BTC-USDT"
+      },
+      {
+        "channel": "depth",
+        "symbol": "BTC-USDT",
+        "limit": 5
+      },
+      {
+        "channel": "trades",
+        "symbol": "BTC-USDT"
+      },
+      {
+        "channel": "kline",
+        "symbol": "BTC-USDT",
+        "interval": "1m"
+      }
+    ],
+    "totalActive": 4
+  }
+}
+```
+
+Subscription processing rules:
+
+1. `args` must be a nonempty array containing at most 20 items.
+2. If any item has an invalid field, unsupported interval, unknown trading pair, conflicting depth, or would exceed the subscription limit, the entire batch fails. Existing subscriptions remain unchanged; partial success is not supported.
+3. Duplicate normalized items in the same request count only once.
+4. Subscribing again to an identical existing subscription succeeds without increasing the count or resending its initial snapshot.
+5. `data.subscriptions` contains the successfully processed items after deduplication and default-value expansion, including items that already existed. `totalActive` is the connection's current total number of active subscriptions.
+6. For a newly created subscription, its acknowledgment is sent before its data. Data from existing subscriptions may be interleaved normally.
+7. Initial behavior: `ticker` sends a latest-state snapshot; `depth` sends a complete snapshot of the subscribed levels; `kline` sends a current-interval state snapshot; `trades` sends only new executions occurring after the subscription takes effect.
+
+#### 2.3.2 Unsubscribing
+
+Client request:
+
+```json
+{
+  "op": "unsubscribe",
+  "requestId": "unsub-0001",
+  "args": [
+    {
+      "channel": "depth",
+      "symbol": "BTC-USDT",
+      "limit": 5
+    }
+  ]
+}
+```
+
+Server acknowledgment:
+
+```json
+{
+  "op": "unsubscribe",
+  "requestId": "unsub-0001",
+  "success": true,
+  "ts": 1792656075000,
+  "data": {
+    "subscriptions": [
+      {
+        "channel": "depth",
+        "symbol": "BTC-USDT",
+        "limit": 5
+      }
+    ],
+    "totalActive": 3
+  }
+}
+```
+
+Unsubscribe requests use the same parameter validation and batch-size limits as subscribe requests and are processed atomically as a batch. Unsubscribing from a valid item for an existing trading pair that is not currently subscribed also succeeds.
+
+A depth unsubscribe request must match the normalized `limit`. If omitted, it defaults to 20; therefore, omitting `limit` does not cancel a 5-level subscription.
+
+Old data already in the send queue may arrive before the acknowledgment. After the acknowledgment, the server sends no further data for that subscription. Client-side asynchronous processing queues should also retain a subscription generation identifier so that tasks from a canceled subscription cannot overwrite a new subscription's state.
+
+#### 2.3.3 Subscription Failure
+
+```json
+{
+  "op": "subscribe",
+  "requestId": "sub-0002",
+  "success": false,
+  "ts": 1792656072000,
+  "error": {
+    "code": "INVALID_INTERVAL",
+    "message": "unsupported interval: 2m",
+    "details": [
+      {
+        "field": "args[0].interval",
+        "reason": "UNSUPPORTED_VALUE"
+      }
+    ]
+  }
+}
+```
+
+Control responses are identified by `op`; market data messages are identified by `channel`. Distinguish them before parsing their payloads. Do not interpret subscription acknowledgments or heartbeat responses as market data objects.
+
+### 2.4 Common Market Data Message Structure
+
+| Field | Type | Description |
+|---|---|---|
+| `channel` | string | `ticker`, `depth`, `trades`, or `kline` |
+| `symbol` | string | Trading pair |
+| `type` | string | `snapshot` or `update` |
+| `ts` | integer | Time when the server placed the message in its send queue |
+| `data` | object / array / null | Channel-specific business payload |
+| `limit` | integer | Present only for depth; subscribed number of levels |
+| `interval` | string | Present only for candlesticks; subscribed interval |
+
+`ts` is neither the execution time nor the client reception time. For business event timing, use channel fields such as `lastTradeTime`, `tradeTime`, or `eventTime`.
+
+This protocol does not guarantee exactly-once delivery across reconnections. Clients must tolerate duplicate business data introduced by snapshots and HTTP backfills. Data may be missed while disconnected and must be recovered according to the channel.
+
+The following normal publication cadences belong to the fictional protocol and illustrate aggregation behavior; they are not performance commitments for an actual service:
+
+| Channel | Normal publication cadence | Can intermediate states be coalesced? |
+|---|---|---|
+| `ticker` | Approximately 100 ms minimum between updates; only updates after new trades | Yes; retains the latest trade state within the window |
+| `depth` | Approximately 100 ms minimum between updates; only when subscribed levels change | Yes; multiple changes are coalesced into final level quantities |
+| `trades` | Batches assembled approximately every 50 ms, with at most 100 trades per message | Distinct trades are not merged; more than 100 trades are split across messages |
+| `kline` | Regular updates approximately every 1000 ms; closure and new-interval initialization are sent separately | Yes, but each update contains the complete cumulative state of that candle |
+
+These cadences do not imply periodic data delivery in an idle market. Use heartbeats to determine whether the connection is alive.
+
+### 2.5 Latest Price Channel
+
+#### 2.5.1 Subscription Parameters
+
+```json
+{
+  "op": "subscribe",
+  "requestId": "sub-ticker-0001",
+  "args": [
+    {
+      "channel": "ticker",
+      "symbol": "BTC-USDT"
+    }
+  ]
+}
+```
+
+#### 2.5.2 Example Update
+
+The first message has `type="snapshot"`. A subsequent update is shown below:
+
+```json
+{
+  "channel": "ticker",
+  "symbol": "BTC-USDT",
+  "type": "update",
+  "ts": 1792656072000,
+  "data": {
+    "hasTrade": true,
+    "lastPrice": "68250.10",
+    "lastQty": "0.01500000",
+    "lastTradeId": "90010002",
+    "lastTradeTime": 1792656071950
+  }
+}
+```
+
+Fields have the same meanings as in the HTTP latest-price response. `symbol` is in the outer message and is not repeated inside `data`.
+
+Both `snapshot` and `update` contain complete states, so each can replace the stored state for that trading pair. When HTTP initialization races with live WebSocket data, compare `lastTradeId` numerically and retain the newer record; identical IDs are duplicates. If a local trade already exists, do not overwrite it with an earlier `hasTrade=false` snapshot.
+
+If no trade history exists, the initial snapshot is still sent with `hasTrade=false` and all four trade-related fields set to `null`. Because this channel coalesces intermediate price changes, use `trades` when individual execution records are required.
+
+### 2.6 Order Book Depth Channel
+
+#### 2.6.1 Initial Snapshot
+
+After a new subscription is acknowledged, the first data message is a `snapshot`:
+
+```json
+{
+  "channel": "depth",
+  "symbol": "BTC-USDT",
+  "limit": 5,
+  "type": "snapshot",
+  "ts": 1792656072000,
+  "data": {
+    "bookId": "dep-btc-usdt-0007",
+    "sequence": "8000100",
+    "eventTime": 1792656071980,
+    "bids": [
+      ["68250.00", "1.20000000"],
+      ["68249.90", "0.80000000"],
+      ["68249.80", "2.50000000"],
+      ["68249.70", "1.10000000"],
+      ["68249.60", "0.60000000"]
+    ],
+    "asks": [
+      ["68250.20", "0.90000000"],
+      ["68250.30", "1.40000000"],
+      ["68250.40", "2.10000000"],
+      ["68250.50", "0.70000000"],
+      ["68250.60", "1.80000000"]
+    ]
+  }
+}
+```
+
+On receiving the snapshot, replace both sides of the local book in full, record `bookId`, `sequence`, and the current subscription generation, and then mark the book as available.
+
+The snapshot is the complete set of the top N levels at that time. It does not include levels beyond N. Never combine snapshots and updates from different subscribed depths or different `bookId` values.
+
+#### 2.6.2 Incremental Updates
+
+```json
+{
+  "channel": "depth",
+  "symbol": "BTC-USDT",
+  "limit": 5,
+  "type": "update",
+  "ts": 1792656072100,
+  "data": {
+    "bookId": "dep-btc-usdt-0007",
+    "prevSequence": "8000100",
+    "sequence": "8000107",
+    "eventTime": 1792656072080,
+    "bids": [
+      ["68250.00", "0.95000000"],
+      ["68249.90", "0.00000000"],
+      ["68249.50", "1.30000000"]
+    ],
+    "asks": [
+      ["68250.20", "1.10000000"]
+    ]
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `bookId` | Must match the current book lifecycle |
+| `prevSequence` | Sequence number of the preceding book state sent for this subscription; must equal the last locally applied sequence |
+| `sequence` | Sequence number after applying this update; must be greater than `prevSequence` |
+| `eventTime` | Time when the target book state was formed |
+| `bids`, `asks` | Levels changed relative to the preceding sent state; an unchanged side may be an empty array |
+
+**An incremental message carries the new absolute quantity at each price, not an amount to add or subtract.** In this example, `"0.95000000"` replaces the quantity at `68250.00` with `0.95 BTC`; it does not add `0.95 BTC` to the previous `1.2 BTC`.
+
+Update rules:
+
+1. Quantity greater than zero: insert or replace the level.
+2. Quantity equal to zero: remove the level, whether or not it exists locally.
+3. Quantity below zero: the message is invalid; stop applying updates and rebuild the book.
+4. Apply both sides of a message as one unit and publish the result to application threads only after completion.
+5. Prices must not repeat within a side. Bid changes are sorted by descending price and ask changes by ascending price.
+
+After the example update, the local five-level bid book should be:
+
+```text
+68250.00  ->  0.95000000
+68249.80  ->  2.50000000
+68249.70  ->  1.10000000
+68249.60  ->  0.60000000
+68249.50  ->  1.30000000
+```
+
+#### 2.6.3 Handling the Top-N Boundary
+
+The protocol sends differences between consecutive top-N sets, rather than only levels where orders were actually canceled in the matching engine:
+
+- A level that leaves the top N is sent with zero quantity, even if it still exists deeper in the book.
+- A level entering the top N is sent with its complete current quantity, even if it merely moved up from position N+1.
+- A level that remains in the top N but changes quantity is sent with its new quantity.
+- Changes outside the top N that do not affect the current top-N set may be omitted.
+
+Applying a complete message under these rules must produce the exact current top-N set. Do not use truncation to N levels to conceal missing removals or replacements. Rebuild the book if the result violates the protocol.
+
+#### 2.6.4 Validating Sequence Continuity
+
+Within the same subscription generation, process messages in this order:
+
+1. Without a valid snapshot, do not apply an `update`.
+2. If `bookId` differs from the local value, do not compare sequence magnitudes or apply the update. Wait for or request a new snapshot.
+3. With the same `bookId`, if `sequence≤localSequence`, ignore the duplicate or stale state.
+4. If `sequence>localSequence` and `prevSequence=localSequence`, apply normally.
+5. If `sequence>localSequence` but `prevSequence≠localSequence`, there is a gap, out-of-order processing, or an incorrect merge. Immediately mark the book unavailable and resubscribe.
+
+`sequence=prevSequence+1` is not required. The example transition from `8000100` to `8000107` is valid because the server may coalesce multiple underlying changes.
+
+When rebuilding its order book, the server may proactively send a new `snapshot`, possibly with a new `bookId`. The snapshot replaces the old state, and subsequent updates continue from it. In normal protocol order, an update for a new `bookId` never precedes its corresponding snapshot. Within the current subscription, a duplicate snapshot with the same `bookId` and a sequence no newer than the local sequence may be ignored.
+
+#### 2.6.5 Recovering from a Gap
+
+1. Mark the trading pair's book as `STALE` and stop exposing it as a valid live order book.
+2. Stop applying further updates for the affected subscription.
+3. Send an unsubscribe request and wait for acknowledgment.
+4. Resubscribe with the same `symbol` and `limit`; wait for the new acknowledgment and snapshot.
+5. Replace all local state with the new snapshot, then resume incremental processing.
+
+If unsubscribe or resubscribe is not acknowledged within 5 seconds, close and rebuild the connection. Other channels sharing that connection must also restore their subscriptions.
+
+Sending the same `subscribe` again is not enough to request a fresh snapshot: existing subscriptions succeed idempotently without resending snapshots.
+
+Do not insert an arbitrary HTTP snapshot into an active WebSocket update chain. Its read time may fall between coalesced updates, so the next update's `prevSequence` is not guaranteed to match. In this version, resubscribing and obtaining a new WebSocket snapshot is the standard recovery procedure.
+
+### 2.7 Individual Trades Channel
+
+#### 2.7.1 Example Update
+
+```json
+{
+  "channel": "trades",
+  "symbol": "BTC-USDT",
+  "type": "update",
+  "ts": 1792656072000,
+  "data": [
+    {
+      "tradeId": "90010001",
+      "price": "68249.90",
+      "quantity": "0.02000000",
+      "quoteQuantity": "1364.99800000",
+      "takerSide": "SELL",
+      "tradeTime": 1792656071870
+    },
+    {
+      "tradeId": "90010002",
+      "price": "68250.10",
+      "quantity": "0.01500000",
+      "quoteQuantity": "1023.75150000",
+      "takerSide": "BUY",
+      "tradeTime": 1792656071950
+    }
+  ]
+}
+```
+
+`data` is an array containing 1–100 trades. A single trade is still wrapped in an array, and empty arrays are not sent. Fields are identical to HTTP trade records.
+
+Trades are delivered in ascending numeric `tradeId` order, both within a message and across the trading pair's stream on one continuous connection. Do not compare IDs across trading pairs.
+
+#### 2.7.2 Initialization and Post-Disconnect Backfill
+
+To combine a recent-trades list with live updates:
+
+1. Subscribe to `trades` first and buffer live trades after acknowledgment.
+2. Query HTTP `/market/trades` for recent records.
+3. Merge and deduplicate the HTTP result and buffered data by `(symbol, tradeId)`.
+4. Process in ascending numeric `tradeId` order, then continue consuming live data.
+
+Use the same procedure after reconnecting, but completeness depends on the coverage of the latest 1000 trades:
+
+- If the HTTP result contains the last trade ID processed before disconnection, and the new live stream connects correctly, an overlap boundary can be established between backfilled and locally stored records.
+- If the last pre-disconnection trade precedes the earliest record in the HTTP window, complete recovery of missing trades cannot be confirmed.
+- When switching from the HTTP query to the live buffer, also verify overlap or an explicit subscription activation boundary. Timestamp comparisons alone cannot establish gap-free coverage.
+- Systems that require a complete historical execution record should persist trades continuously and explicitly record gaps that cannot be filled. This protocol does not provide pagination for older individual trades.
+
+The `ticker` channel cannot recover all individual trades because it coalesces intermediate states.
+
+### 2.8 Live Candlestick Channel
+
+#### 2.8.1 Subscription Request
+
+```json
+{
+  "op": "subscribe",
+  "requestId": "sub-kline-0001",
+  "args": [
+    {
+      "channel": "kline",
+      "symbol": "BTC-USDT",
+      "interval": "1m"
+    },
+    {
+      "channel": "kline",
+      "symbol": "BTC-USDT",
+      "interval": "1h"
+    }
+  ]
+}
+```
+
+#### 2.8.2 Current Candlestick Update
+
+```json
+{
+  "channel": "kline",
+  "symbol": "BTC-USDT",
+  "interval": "1m",
+  "type": "update",
+  "ts": 1792656072000,
+  "data": {
+    "openTime": 1792656060000,
+    "closeTime": 1792656120000,
+    "open": "68240.00",
+    "high": "68260.00",
+    "low": "68230.00",
+    "close": "68250.10",
+    "volume": "2.50000000",
+    "quoteVolume": "170610.12500000",
+    "tradeCount": 31,
+    "isClosed": false,
+    "revision": 31,
+    "eventTime": 1792656071950
+  }
+}
+```
+
+The initial current-interval snapshot uses `type="snapshot"` and has the same payload structure as an update. If the trading pair has not yet had its first trade and no candle exists for the current interval, the initial snapshot has `data=null`. This is not a subscription failure; the first candle will be published when it forms.
+
+#### 2.8.3 Candle Closure Message
+
+```json
+{
+  "channel": "kline",
+  "symbol": "BTC-USDT",
+  "interval": "1m",
+  "type": "update",
+  "ts": 1792656120050,
+  "data": {
+    "openTime": 1792656060000,
+    "closeTime": 1792656120000,
+    "open": "68240.00",
+    "high": "68280.00",
+    "low": "68230.00",
+    "close": "68270.00",
+    "volume": "8.00000000",
+    "quoteVolume": "546040.00000000",
+    "tradeCount": 96,
+    "isClosed": true,
+    "revision": 97,
+    "eventTime": 1792656120000
+  }
+}
+```
+
+Within one continuous subscription, the final `isClosed=true` update for the preceding interval is sent before the initial state of the next interval. If the connection drops during the transition, the client may miss the final message and must backfill through HTTP.
+
+Each update for a candle is its complete cumulative state. Do not add the new `volume` to the previous `volume`, or treat `tradeCount` as the number of new executions in this message. See Section 3.5 for merge rules.
+
+### 2.9 Application-Level Heartbeats
+
+The client sends an application-level ping every 20 seconds. Use one heartbeat scheduler per connection, rather than one per channel.
+
+Client:
+
+```json
+{
+  "op": "ping",
+  "requestId": "ping-0001",
+  "ts": 1792656080000
+}
+```
+
+Server:
+
+```json
+{
+  "op": "pong",
+  "requestId": "ping-0001",
+  "ts": 1792656080010,
+  "echoTs": 1792656080000
+}
+```
+
+Fields and handling rules:
+
+- The ping's `ts` is the client's wall-clock time at send time and is echoed unchanged in `echoTs`. The pong's `ts` is the server's send time.
+- The ping's `ts` must be a nonnegative millisecond timestamp.
+- Match ping and pong by `requestId`. Receiving other market data does not count as a response to an outstanding ping.
+- If no matching pong arrives within 5 seconds after a ping, close the old connection and reconnect.
+- The server closes the connection with code `1001` if it receives no valid application-level control message on that connection for 60 consecutive seconds.
+- The client library may handle WebSocket protocol-level ping/pong frames, but those do not replace the JSON application heartbeat defined here or reset the application-level idle timer.
+- Measure round-trip elapsed time using local send and receive readings from `System.nanoTime()`, so system clock adjustments do not affect timeout decisions.
+
+### 2.10 Reconnection and Subscription Recovery
+
+The client should distinguish at least these connection states: connecting, connected, subscribing, data ready, waiting to reconnect, and intentionally stopped. A successful connection handshake does not mean all four data types are ready.
+
+Standard reconnection procedure:
+
+1. Atomically invalidate the old connection and stop its heartbeat and reconnection scheduling.
+2. Mark live data that depends on that connection as stale. If retaining old values for display, expose a stale indicator alongside them.
+3. Start one new connection attempt after the backoff delay; prevent multiple threads from reconnecting simultaneously.
+4. Once connected, restore the locally stored desired subscription set using new request IDs. If there are more than 20 subscriptions, send batches while respecting control-message rate limits.
+5. Wait for each batch acknowledgment, then perform channel-specific initialization or HTTP backfill.
+6. Mark each channel's data available separately when its recovery conditions are met.
+
+An exponential backoff sequence of `1`, `2`, `4`, `8`, `16`, and then `30` seconds, capped at 30 seconds, may be used with an additional 0–500 ms of random jitter on each delay. Reset the backoff counter only after 60 seconds of stable connectivity, so repeated short-lived connections do not keep retrying at 1-second intervals.
+
+| Channel | Recovery condition after reconnecting |
+|---|---|
+| Latest price | The new subscription's latest-state snapshot has arrived |
+| Order book depth | A new snapshot has arrived and ordered incremental processing has started; do not reuse the old update chain |
+| Individual trades | The new live stream is established and required HTTP recent-trade backfill is complete; uncovered gaps are recorded separately |
+| Live candlesticks | The new live stream is established and HTTP backfill from the last stored interval has filled candles missed during disconnection |
+
+Increment a client-local `connectionGeneration` each time a connection is established. Callbacks and queued tasks must carry that generation. Messages, close callbacks, and asynchronous results from an old connection must not overwrite a new connection's state.
+
+### 2.11 WebSocket Errors and Close Codes
+
+| Error code | Meaning | Action |
+|---|---|---|
+| `INVALID_JSON` | Text is not a valid JSON object | Correct serialization |
+| `INVALID_OPERATION` | Unsupported `op` | Use only `subscribe`, `unsubscribe`, or `ping` |
+| `INVALID_ARGUMENT` | Missing or unknown field, incorrect type, or invalid range | Correct the request according to `details` |
+| `SYMBOL_NOT_FOUND` | Trading pair does not exist | Correct the trading pair |
+| `INVALID_INTERVAL` | Unsupported candlestick interval | Use a documented interval |
+| `DEPTH_SUBSCRIPTION_CONFLICT` | Another depth is already subscribed for the same pair on this connection | Unsubscribe from the old depth before subscribing to the new depth |
+| `SUBSCRIPTION_LIMIT_EXCEEDED` | Active subscriptions would exceed 50 | Reduce or redistribute subscriptions |
+| `RATE_LIMITED` | Control messages are being sent too quickly | Batch operations and reduce the send rate |
+| `INTERNAL_ERROR` | Internal service error | Retry with a limit; reconnect if failures persist |
+
+When a request can be identified, the error response uses its `op` and `requestId`. If JSON cannot be parsed or no usable request ID is available, the server uses `op="error"` and `requestId=null`; the rest of the error structure follows Section 2.3.3. Unparseable messages do not change subscription state.
+
+| Close code | Meaning in this protocol | Client action |
+|---:|---|---|
+| 1000 | Normal closure | Do not reconnect after an intentional stop; if the server closed the connection and desired subscriptions remain, reconnect with backoff |
+| 1001 | Service shutdown, restart, or application-heartbeat idle timeout | Inspect the close reason and reconnect |
+| 1002 | WebSocket protocol error | Check the client's protocol usage |
+| 1003 | Unsupported binary application message was sent | Use UTF-8 text JSON |
+| 1008 | Persistent message-rate or other connection-policy violations | Reduce the rate or correct behavior before reconnecting |
+| 1009 | Application message exceeds 1 MiB | Reduce the request size or investigate the abnormal message |
+| 1011 | Internal service failure | Reconnect with backoff |
+| 1006 | Abnormal disconnection observed locally | Record network diagnostics and reconnect; this is not a close code sent on the wire by the peer |
+
+Close reason text is diagnostic and must not be the sole basis for program logic. Some network failures trigger only an error callback, without a normal close callback. Route both paths through the same idempotent connection-invalidation logic.
+
+---
+
+## 3. Candlestick Query and Merge Rules
+
+### 3.1 Supported Intervals and UTC Alignment
+
+| `interval` | Meaning | `intervalMs` | Example boundaries, all in UTC |
+|---|---|---:|---|
+| `1m` | 1 minute | 60000 | Second 0 of every minute |
+| `5m` | 5 minutes | 300000 | Minutes 00, 05, 10, …, 55 of every hour |
+| `15m` | 15 minutes | 900000 | Minutes 00, 15, 30, 45 of every hour |
+| `30m` | 30 minutes | 1800000 | Minutes 00 and 30 of every hour |
+| `1h` | 1 hour | 3600000 | Start of every hour |
+| `4h` | 4 hours | 14400000 | 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 each day |
+| `1d` | 1 day | 86400000 | 00:00:00 each day |
+
+Interval values are case-sensitive. `1M`, `60m`, and `24h` are not valid aliases. Weekly, monthly, and custom intervals are not defined in this guide.
+
+For a millisecond timestamp `t` and interval duration `P`:
+
+```text
+openTime  = floor(t / P) × P
+closeTime = openTime + P
+Trade assignment condition：openTime ≤ tradeTime < closeTime
+```
+
+A trade executed exactly at UTC `08:01:00.000` belongs to the 1-minute candle starting at `08:01`, not the one starting at `08:00`.
+
+Daily candles use UTC calendar days and do not change with the client's time zone or daylight saving time. For a Java service deployed in `Asia/Shanghai`, the UTC daily boundary is displayed as 08:00 Beijing time. Display conversion does not change candle keys or request timestamps.
+
+### 3.2 Time Filters and Pagination Direction
+
+Filtering uses **the candle's `openTime`**, not whether the candle overlaps the requested time range. The server does not automatically round request timestamps to interval boundaries.
+
+When both bounds are provided:
+
+```text
+startTime ≤ openTime < endTime
+```
+
+For example, a 1-minute query over UTC `[08:00:10, 08:01:10)` behaves as follows:
+
+- The candle opening at `08:00:00` is excluded because its open time precedes the lower bound.
+- The candle opening at `08:01:00` may be returned even though its close boundary is after the upper bound.
+- To obtain only candles fully contained in a range, align the bounds yourself or additionally check `closeTime`.
+
+#### 3.2.1 Four Parameter Combinations
+
+| `startTime` | `endTime` | Selection | `pageDirection` | Next-page request |
+|---|---|---|---|---|
+| Omitted | Omitted | Latest `limit` candles among currently formed data | `backward` | Supply only `endTime=nextEndTime` as the time bound |
+| Omitted | Provided | Latest `limit` candles with `openTime<endTime` | `backward` | Continue omitting `startTime`; update `endTime` |
+| Provided | Omitted | Earliest `limit` currently existing candles with `openTime≥startTime` | `forward` | Update `startTime=nextStartTime` |
+| Provided | Provided | Earliest `limit` candles in the specified range | `forward` | Keep the original `endTime`; update `startTime` |
+
+Regardless of pagination direction, each page's `items` is always sorted by ascending `openTime`. `backward` means successive pages move toward older history, not that the array itself is reversed.
+
+#### 3.2.2 Cursor Calculation
+
+When `pageDirection="forward"` and `hasMore=true`:
+
+```text
+nextStartTime = closeTime of the last candle on this page
+nextEndTime   = null
+```
+
+When `pageDirection="backward"` and `hasMore=true`:
+
+```text
+nextStartTime = null
+nextEndTime   = openTime of the first candle on this page
+```
+
+When `hasMore=false`, both cursors are `null`. Receiving exactly `limit` records does not establish that another page exists; use `hasMore`.
+
+`hasMore` describes only data already present in this query's snapshot. It does not reserve a next page for future candles. Use WebSocket for ongoing live updates instead of repeatedly requesting the same page after `hasMore=false`.
+
+#### 3.2.3 Forward Pagination Example
+
+Suppose a query made after UTC `08:05:00` requests the five closed 1-minute candles in `[08:00:00, 08:05:00)`, with `limit=2`:
+
+| Page | Requested `startTime` | Unchanged `endTime` | Open times on this page | `hasMore` | `nextStartTime` |
+|---|---:|---:|---|---|---:|
+| 1 | 1792656000000 | 1792656300000 | 08:00, 08:01 | true | 1792656120000 |
+| 2 | 1792656120000 | 1792656300000 | 08:02, 08:03 | true | 1792656240000 |
+| 3 | 1792656240000 | 1792656300000 | 08:04 | false | null |
+
+Do not set the next lower bound to the last candle's `openTime`, which would fetch that candle again. Use the returned `nextStartTime`.
+
+#### 3.2.4 Backward Pagination Example
+
+First request the two most recent candles without time bounds. Assume the latest formed candles are `08:00` and `08:01`, and older data exists:
+
+```text
+Page 1：interval=1m&limit=2
+Returns：08:00、08:01
+nextEndTime=1792656000000
+
+Page 2：interval=1m&endTime=1792656000000&limit=2
+Returns：07:58、07:59
+```
+
+When loading older history into a user interface, prepend the second page to the existing list and deduplicate by candle key. Do not reverse the page array twice because pagination moves backward.
+
+### 3.3 Query Boundaries and Empty Results
+
+| Scenario | Behavior |
+|---|---|
+| `startTime=endTime` or `startTime>endTime` | HTTP `400`, `INVALID_TIME_RANGE` |
+| `startTime` precedes the earliest available candle | Query normally and return existing data within the range; do not synthesize pre-listing history |
+| `endTime` is at or before the earliest available candle | Success with `items=[]` |
+| `startTime` is in the future and `endTime` is omitted | Success with `items=[]` |
+| `endTime` is in the future | Return only candles already formed at `asOf`; do not generate future data |
+| No records match the specified range | `count=0`, `hasMore=false`, and both cursors are `null` |
+| Trading pair exists but has never traded | `availableFrom=null`, `items=[]` |
+| Trading pair does not exist | HTTP `404`, `SYMBOL_NOT_FOUND` |
+| `limit=0`, negative, or greater than 1000 | HTTP `400`, `INVALID_ARGUMENT`; the value is not clamped automatically |
+| Unsupported interval such as `interval=2m` | HTTP `400`, `INVALID_INTERVAL` |
+
+This design imposes no additional limit on the time span of a request, but each response is still limited to 1000 candles. Use cursor pagination for long ranges instead of increasing `limit` beyond the maximum.
+
+### 3.4 Intervals Without Trades, Cumulative Values, and Closure
+
+#### 3.4.1 Generating Candles When No Trades Occur
+
+Once a trading pair has traded, continuous candles are still generated for complete intervals without executions:
+
+```text
+open       = previous interval close
+high       = previous interval close
+low        = previous interval close
+close      = previous interval close
+volume     = 0
+quoteVolume= 0
+tradeCount = 0
+```
+
+Prices, quantities, and amounts remain JSON strings. Zero volume may be represented as `"0.00000000"`; clients must compare numerically and must not require a particular scale for zero.
+
+At the start of a new interval before any trade occurs, the current candle uses the carried-forward price as a provisional state with `isClosed=false`. When the interval's first actual trade occurs, its price reinitializes that interval's `open/high/low/close`. The carried-forward price is not included in the actual trade high or low.
+
+No candles are generated before the trading pair's first-ever trade. The first candle's `openTime` is rounded down to the containing interval boundary. Empty history before that interval is not backfilled.
+
+Consequently, missing intervals after trading has begun must be treated as gaps requiring investigation or backfill, rather than automatically interpreted as periods without trades.
+
+#### 3.4.2 Base and Quote Volume
+
+For `BTC-USDT`:
+
+- `volume` is denominated in BTC.
+- `quoteVolume` is denominated in USDT.
+- `tradeCount` is the number of matched executions.
+- `quoteVolume` is the sum of each trade's `price × quantity` in the interval, not `close × volume`.
+- When `volume>0`, the interval's volume-weighted average price can be calculated as `quoteVolume / volume`. The client must explicitly configure division precision and rounding.
+- When `volume=0`, do not perform that division. Return an application-level null value or use a clearly defined display rule.
+
+A candle with executions should satisfy:
+
+```text
+low ≤ open ≤ high
+low ≤ close ≤ high
+volume > 0
+quoteVolume > 0
+tradeCount > 0
+```
+
+#### 3.4.3 Closure State and Revision Numbers
+
+`isClosed=false` identifies a current state that may still change. `isClosed=true` means the server has finalized the interval. This fictional v2.1 protocol defines closed candles as immutable and does not include retrospective historical data corrections.
+
+The scope of `revision` is one candle, identified by `(symbol, interval, openTime)`:
+
+1. The initial revision is `1`.
+2. Changes to price, cumulative quantity, cumulative amount, trade count, or closure state produce a higher revision. Versions may be created in internal batches; the revision need not equal the trade count.
+3. Repeated HTTP reads or WebSocket retransmission of the same state do not increase the revision.
+4. The server may coalesce intermediate revisions, so a jump from `31` to `97` is valid.
+5. Revisions of different candles are not compared. A new interval may start again at `1`.
+6. The same candle and revision must have the same business content, including across HTTP and WebSocket.
+7. `eventTime` is the time the revision was formed, not its reception time or the time of each query.
+
+Do not mark a candle closed merely because the local clock has passed `closeTime`. Network latency, server processing, and local clock skew affect the observed order. Use the server's state and query HTTP when needed.
+
+### 3.5 Merging Historical and Live Data
+
+#### 3.5.1 Unique Key and Replacement Rules
+
+Unique key:
+
+```text
+(symbol, interval, openTime)
+```
+
+For the same key:
+
+| Existing state | Incoming state | Action |
+|---|---|---|
+| No local record | Any valid state | Insert |
+| Local candle is open | Higher `revision` | Replace the entire state |
+| Local candle is open | Lower `revision` | Discard stale state |
+| Any state | Same `revision` and identical business values | Ignore the duplicate |
+| Any state | Same `revision` but different business values | Log a protocol anomaly and query HTTP again; do not overwrite arbitrarily |
+| Local candle is closed | An open state with a lower revision | Discard late stale data |
+| Local candle is closed | A higher revision or conflicting content at the same revision | This violates closed-candle immutability; log the anomaly and query again |
+
+Compare prices and quantities by decimal value; `"1.0"` and `"1.00"` are not conflicting market values. `symbol`, `interval`, `openTime`, `closeTime`, `isClosed`, trade count, and revision must match exactly.
+
+Replace complete cumulative values from WebSocket messages as a unit. Do not add successive `volume`, `quoteVolume`, or `tradeCount` values together.
+
+#### 3.5.2 Initial Chart Loading
+
+Recommended procedure:
+
+1. Establish the WebSocket candlestick subscription first, buffering the current snapshot and updates received after acknowledgment.
+2. Fetch the historical candles required for display over HTTP, such as the latest 500.
+3. Store the HTTP results in the local cache or database by unique key.
+4. Merge the buffered live data using the revision rules above. A later-arriving HTTP response must not overwrite a newer version already received.
+5. Route live messages arriving before and after initialization through the same serialized merge logic, avoiding a gap between draining the buffer and receiving new messages.
+6. Continue processing WebSocket data, and use HTTP to load older history as needed.
+
+Set a capacity or duration limit for the buffer. If initialization is too slow and the buffer overflows, restart initialization. Do not discard updates and still claim complete data.
+
+#### 3.5.3 Backfilling Candles After Disconnection
+
+After restoring the subscription and buffering new messages, issue a forward HTTP query starting at the `openTime` of the last locally saved candle, including that candle:
+
+```text
+symbol=BTC-USDT
+interval=1m
+startTime=<last locally saved openTime>
+limit=1000
+```
+
+The one-interval overlap is intentional: it allows an open version saved before disconnection to be replaced with its final closed version. If more than 1000 intervals were missed, paginate using `nextStartTime` before merging the live buffer.
+
+For a bounded catch-up operation, keep `endTime` fixed and let the live stream take over afterward. This protocol does not provide a token that pins multiple HTTP requests to one database snapshot. Closed data is immutable, while revision numbers resolve differences in the current interval observed at different query times.
+
+To validate continuity after the first available candle, adjacent records should satisfy:
+
+```text
+next.openTime = current.closeTime
+```
+
+If they do not, backfill the missing range. Intervals without trades should still have zero-volume candles, so they must not be exempted from this check.
+
+#### 3.5.4 Switching Intervals or Trading Pairs
+
+`BTC-USDT/1m` and `BTC-USDT/1h` are different datasets. When switching between them:
+
+- Use the new interval in both HTTP history requests and WebSocket subscriptions.
+- Maintain a separate operation generation when switching the display or cache. Late responses from old requests must not overwrite the new interval's view.
+- If the old interval is no longer needed, unsubscribe and wait for acknowledgment to release its subscription slot.
+- Do not mix revisions, volumes, or unique keys from different intervals.
+
+---
+
+## 4. Java Integration Notes and Focused Examples
+
+The following sections provide focused snippets for HTTP requests, JSON handling, precision, and subscription messages—not a complete client application. HTTP examples use Java's built-in `java.net.http` API. JSON examples assume the project already uses Jackson; dependency configuration is outside this guide's scope.
+
+### 4.1 HTTP Query Example
+
+The following example requests candlesticks and reads the response. It is intended to be called from an existing application method. The caller handles `IOException`, `InterruptedException`, and application errors, and configures bounded retries as described in Section 1.8.
+
+```java
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.UUID;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+// Reuse HttpClient and ObjectMapper as service-level instances.
+HttpClient client = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(5))
+        .build();
+ObjectMapper mapper = new ObjectMapper();
+
+// Use the HTTP service URL specified by the integrator.
+URI uri = URI.create(
+        "https://api.duraqex.com/v2.1/market/klines"
+        + "?symbol=BTC-USDT&interval=1m&limit=500");
+
+HttpRequest request = HttpRequest.newBuilder(uri)
+        .timeout(Duration.ofSeconds(10))
+        .header("Accept", "application/json")
+        .header("X-Request-ID", UUID.randomUUID().toString())
+        .GET()
+        .build();
+
+HttpResponse<String> response = client.send(
+        request, HttpResponse.BodyHandlers.ofString());
+
+if (response.statusCode() != 200) {
+    // Read Retry-After, request ID, and error body in the error handler.
+    // Gateway errors may be non-JSON; do not parse them as success responses.
+    throw new IllegalStateException("HTTP status=" + response.statusCode());
+}
+
+JsonNode root = mapper.readTree(response.body());
+if (!"0".equals(root.path("code").asText())) {
+    throw new IllegalStateException("API code=" + root.path("code").asText());
+}
+
+JsonNode data = root.get("data");
+if (data == null || !data.isObject()
+        || !data.path("items").isArray()) {
+    throw new IllegalStateException("Invalid kline response structure");
+}
+
+for (JsonNode item : data.get("items")) {
+    // Validate field types, then merge by (symbol, interval, openTime) and revision.
+}
+```
+
+The trading pair and interval in this URL are fixed, validated values. For dynamic inputs, validate them against the protocol and build the URI with a query-parameter encoding utility; do not concatenate arbitrary external strings directly.
+
+Do not run synchronous HTTP queries on the WebSocket callback thread. Use a separate executor for backfills and return the results to the relevant stream's serial processing queue.
+
+### 4.2 Price, Quantity, and Amount Precision
+
+```java
+import java.math.BigDecimal;
+
+BigDecimal price = new BigDecimal("68250.10");
+BigDecimal quantity = new BigDecimal("0.01500000");
+BigDecimal quoteQuantity = price.multiply(quantity);
+
+// Exact decimal result: 1023.7515000000
+String plainAmount = quoteQuantity.toPlainString();
+```
+
+Processing rules:
+
+1. Construct `BigDecimal` directly from the JSON numeric string; do not call `asDouble()` or `Double.parseDouble()` first.
+2. Avoid constructors that take binary floating-point values, such as `new BigDecimal(0.1)`.
+3. Use `compareTo()` for numeric comparisons; for example, use `quantity.signum()==0` to test for zero quantity.
+4. `BigDecimal.equals()` also compares scale, so `1.0` and `1.00` are not equal; do not use it to test numeric equality of prices.
+5. Specify division precision and rounding explicitly when computing average prices. Display rounding must not alter cached source market data.
+6. Persist values in decimal columns with sufficient capacity or as original strings to avoid implicit database truncation. Determine precision from the actual service implementation, not from the examples in this guide.
+
+### 4.3 Timestamp Handling
+
+```java
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+
+long openTime = 1792656000000L;
+Instant instant = Instant.ofEpochMilli(openTime);
+ZonedDateTime utcTime = instant.atZone(ZoneId.of("UTC"));
+ZonedDateTime shanghaiTime = instant.atZone(ZoneId.of("Asia/Shanghai"));
+
+// utcTime：2026-10-22T08:00Z[UTC]
+// shanghaiTime：2026-10-22T16:00+08:00[Asia/Shanghai]
+```
+
+Store millisecond timestamps in `long`, not `int`. Convert using `ofEpochMilli`, not `ofEpochSecond`. Preserve raw timestamps in requests, cache keys, and databases; convert time zones only for presentation.
+
+Server event time and local receive time can help observe latency, but clocks on different machines may differ. Their simple difference is not an accurate one-way network latency measurement. Use a local monotonic clock for timeouts and reconnection timers.
+
+### 4.4 Example: Sending a Subscription Message
+
+Assume an already connected `java.net.http.WebSocket webSocket` and reuse the `ObjectMapper mapper` above:
+
+```java
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+ObjectNode subscription = mapper.createObjectNode();
+subscription.put("op", "subscribe");
+subscription.put("requestId", "sub-java-0001");
+ArrayNode args = subscription.putArray("args");
+
+args.addObject()
+        .put("channel", "ticker")
+        .put("symbol", "BTC-USDT");
+args.addObject()
+        .put("channel", "depth")
+        .put("symbol", "BTC-USDT")
+        .put("limit", 20);
+args.addObject()
+        .put("channel", "trades")
+        .put("symbol", "BTC-USDT");
+args.addObject()
+        .put("channel", "kline")
+        .put("symbol", "BTC-USDT")
+        .put("interval", "1m");
+
+String payload = mapper.writeValueAsString(subscription);
+webSocket.sendText(payload, true);
+```
+
+The asynchronous result returned by `sendText` indicates the outcome of sending the message, not that the server has accepted the subscription. Advance subscription state only after receiving a `success=true` acknowledgment with the matching `requestId`.
+
+In production, serialize subscribe, unsubscribe, and heartbeat sends, and observe send completion to avoid overlapping sends or ignoring failures. This snippet only constructs the message; it does not replace acknowledgment, timeout, or reconnection handling.
+
+### 4.5 WebSocket Text Callbacks and Message Dispatch
+
+When using Java's `WebSocket.Listener`, pay particular attention to:
+
+1. Request incoming messages in `onOpen`, for example with `webSocket.request(1)`, and continue requesting according to processing capacity. Without demand, a connection may stay open while application callbacks never fire.
+2. In `onText`, `last=false` means the text message is incomplete. Accumulate fragments in order and parse JSON only when `last=true`.
+3. Bound the total buffered message size and clear buffers on completion or connection invalidation. Measure the complete UTF-8 byte length, not Java character count.
+4. Avoid long-running JSON parsing, validation, or business processing on the network callback thread. Establish clear ownership before enqueueing messages; do not continue modifying or reusing the same `StringBuilder`.
+5. Use bounded queues and receive-demand control when consumers fall behind. Never accumulate market data without limits.
+6. If a full queue causes an order book delta to be lost, mark the book invalid and rebuild it. Do not discard a delta and continue as if the book were valid.
+7. For trades, dropped messages may mean missing executions; record the gap and attempt backfill. For candlesticks, a newer complete state may replace an older revision of the same key, but do not discard closed intervals that must be persisted.
+8. Preserve processing order within each order book subscription and each candlestick data stream. Different trading pairs may be processed in parallel partitions, but updates to the same book must not be arbitrarily reordered across threads.
+
+Recommended dispatch order:
+
+```text
+Complete JSON message
+  → Contains op: handle subscribe/unsubscribe acknowledgment, pong, or error
+  → Contains channel: dispatch to ticker/depth/trades/kline
+  → Neither, or conflicting structure: log a protocol anomaly
+```
+
+On type-validation failure, do not default a missing price to `0` or a missing `isClosed` to `false`. Distinguish missing required fields from valid `null` values: a ticker with no prior trades may have null trade fields, but an individual trade record cannot have a null price.
+
+### 4.6 Java Data Structures for Order Books
+
+Store price levels in numeric order:
+
+```java
+import java.math.BigDecimal;
+import java.util.Comparator;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+
+NavigableMap<BigDecimal, BigDecimal> bids =
+        new TreeMap<>(Comparator.reverseOrder());
+NavigableMap<BigDecimal, BigDecimal> asks = new TreeMap<>();
+
+// Assume this bid update has already passed sequence validation.
+BigDecimal changedPrice = new BigDecimal("68250.00");
+BigDecimal changedQuantity = new BigDecimal("0.95000000");
+
+if (changedQuantity.signum() < 0) {
+    throw new IllegalArgumentException("Negative depth quantity");
+} else if (changedQuantity.signum() == 0) {
+    bids.remove(changedPrice);
+} else {
+    bids.put(changedPrice, changedQuantity);
+}
+```
+
+This snippet illustrates an absolute-quantity update for a single level only. Full processing must also enforce the snapshots, subscription generation, `bookId`, and sequence checks from Section 2.6. Update the local `sequence` only after every bid and ask change in the message has been applied successfully.
+
+`TreeMap` compares prices numerically, so `68250.0` and `68250.00` refer to the same level. If using `HashMap<BigDecimal, ...>`, normalize price keys first; otherwise different scales may create separate keys.
+
+`TreeMap` is not thread-safe. A single serial consumer can maintain each book and publish immutable snapshots to other threads. Include `bookId`, `sequence`, and validity status in each published snapshot so readers cannot observe a partially applied update.
+
+### 4.7 Candlestick Storage and Idempotent Updates
+
+Whether using a database or an in-memory cache, design idempotency around these fields:
+
+| Purpose | Field or constraint |
+|---|---|
+| Unique identity | `symbol + interval + openTime` |
+| Prevent stale overwrites | Compare `revision` |
+| Identify final state | `isClosed` |
+| Check interval continuity | `openTime`, `closeTime`, `intervalMs` |
+| Audit and troubleshooting | `eventTime`, local receive time, HTTP/WS source, connection generation |
+
+The update condition and write must be atomic. In a database, use a unique index and a revision-conditional update; in memory, process each unique key serially. Do not read the revision in one thread and allow an unconditional overwrite in another.
+
+After a candle-close message, downstream logic that depends on the closing price may run, but triggering must also be idempotent by candle key to prevent duplicate execution after HTTP backfill, resubscription, or application restart.
+
+### 4.8 Responsibilities of HTTP and WebSocket
+
+| Business requirement | Recommended approach |
+|---|---|
+| Show latest price on initial page load | Fetch once via HTTP or wait for initial ticker snapshot |
+| Continuously refresh latest price | WebSocket `ticker` |
+| Inspect current order book once | HTTP `/market/depth` |
+| Maintain a live order book | WebSocket `depth`, snapshot followed by deltas |
+| Display recent executions | Initialize with HTTP `/market/trades`, then merge WebSocket `trades` |
+| Record individual executions in real time | WebSocket `trades`, persist and deduplicate by ID |
+| Initially load a price chart | Merge HTTP `/market/klines` with buffered data from an established WebSocket |
+| Page further back in history | Backward HTTP candlestick pagination |
+| Bulk-download a fixed candlestick range | Forward HTTP candlestick pagination |
+| Update the current candle and its closure status | WebSocket `kline` |
+| Restore order book after disconnection | Resubscribe and use a new WebSocket snapshot |
+| Backfill candlesticks after disconnection | Query HTTP starting from the last saved interval, then merge live revisions |
+
+### 4.9 Common Integration Problems
+
+| Symptom | Common cause | Resolution |
+|---|---|---|
+| Connected but no market data | Not subscribed, subscription rejected, Java receive demand not requested, or no market changes | Check subscription acknowledgment, initial snapshot, `request(1)`, and heartbeat |
+| Latest price does not show every trade | Ticker coalesces intermediate states | Subscribe to `trades` for individual executions |
+| Long decimal rounding artifacts | Converted to `double` first | Construct `BigDecimal` from the original string |
+| Two levels appear at the same price | `BigDecimal` hash keys have different scales | Use a numerically sorted map or normalized keys |
+| Order book quantities keep increasing | Absolute quantities were treated as deltas | Replace quantities and delete zero-quantity levels |
+| Five-level book drops to four levels after removal | Missed incoming level, lost delta, or incorrect boundary handling | Validate complete delta and sequence; do not invent missing levels |
+| Book sequence does not increase by exactly one | Server coalesced underlying changes | Check `prevSequence=localSequence`, not an increment of one |
+| Order book is corrupted after reconnect | Reused old snapshot, stale callback overwrote new state, or missing sequence validation | Discard old generation and rebuild from new snapshot |
+| Candle volume keeps doubling | Added each cumulative full-state update | Replace by unique key and revision |
+| Duplicate times in candlestick list | Created records from message arrival times | Use `symbol + interval + openTime` as the key |
+| Current candle never closes | Missed close event or dead connection | Check heartbeat and query the interval again over HTTP |
+| Pagination repeats the last candle | Used previous page's last `openTime` as forward cursor | Use `nextStartTime` |
+| Historical pages appear in the wrong order | Interpreted `backward` as descending order within a page | Every page is ascending; prepend earlier pages |
+| Daily candle appears to begin at 08:00 Beijing time | Daily intervals are aligned to UTC | Keep UTC aggregation and convert only display time zone |
+| HTTP returns 429 | Shared IP's aggregate weight quota exceeded | Consolidate reads, cache results, and honor `Retry-After` |
+| Cannot recover all trades after disconnect | Gap exceeds the latest-1000-trade window | Record the gap explicitly; do not claim complete recovery |
+
+### 4.10 Integration Validation Scenarios
+
+These scenarios validate whether an implementation follows this guide; they do not imply that a real Duraqex service has passed the tests.
+
+| Scenario | Expected result |
+|---|---|
+| Query latest price, then subscribe to ticker | Merge by trade ID; late stale values do not overwrite newer values |
+| Subscribe to the same ticker twice | Second succeeds, total subscription count does not increase, no duplicate initial snapshot |
+| Batch contains one invalid candlestick interval | Entire batch fails; existing subscriptions unchanged |
+| Switch order book from 20 to 100 levels | Unsubscribe and await acknowledgment, then subscribe and obtain new snapshot |
+| Intentionally drop an order book delta | Next continuity check fails; book becomes invalid and resubscribes |
+| Price level leaves top N | Receive zero-quantity removal; newly entering level gets full quantity |
+| Disconnect at a candle boundary and reconnect | HTTP updates overlapping interval to final state and fills missing intervals |
+| Receive an old HTTP result for the same candle | Lower revision is discarded |
+| Read the same closed candle repeatedly | No duplicate accumulation or close-trigger action |
+| No executions in a complete interval | Generate carry-forward-price candle with zero volume and zero trade count |
+| Receive fragmented JSON text | Accumulate until `last=true` and parse once |
+| Old connection's message arrives after new connection | Discard using connection generation |
+| No heartbeat response within 5 seconds | Close old connection and enter backoff reconnect |
+| HTTP request is rate-limited | Wait the prescribed time; do not retry concurrently immediately |
+
+---
+
+**Document scope:** This guide defines only the HTTP and WebSocket market data protocols above. Deployment URLs use domains specified by the integrating party. Endpoint availability, trading-pair listings, and actual rate limits must be confirmed by the real service operator. Examples in this document are not evidence that a real platform exists or that the described capabilities have been deployed.
